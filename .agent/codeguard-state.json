@@ -1,0 +1,21 @@
+{
+  "codeguard_source_repo": "https://github.com/cosai-oasis/project-codeguard",
+  "codeguard_source_ref": "12e9c8a547de53d287bd681dd2afe9fc2226b75b",
+  "generated_at_utc": "2026-03-08T10:35:37Z",
+  "sources_included": ["core", "owasp"],
+  "installed_formats": [
+    ".agent/rules",
+    ".cursor/rules",
+    ".windsurf/rules",
+    ".github/instructions",
+    ".codex/skills/software-security"
+  ],
+  "rule_file_counts": {
+    "agent_rules": 109,
+    "cursor_rules": 109,
+    "windsurf_rules": 109,
+    "copilot_instructions": 109,
+    "codex_skill_files": 24
+  },
+  "install_status": "success"
+}
