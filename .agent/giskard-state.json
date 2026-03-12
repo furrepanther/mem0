@@ -1,7 +1,7 @@
 {
   "giskard_source_repo": "https://github.com/Giskard-AI/giskard",
-  "giskard_source_ref": "9c5d2c9be9faf2694e95cc7b874f9f35629b6c15",
-  "generated_at_utc": "2026-03-08T11:03:01Z",
+  "giskard_source_ref": "3daacd90b6999f8fad0feb3bc56b7d9cb0cbda80",
+  "generated_at_utc": "2026-03-12T11:17:41Z",
   "scenario_pack_version": "giskard-sidecar-v1",
   "status": "success"
 }
