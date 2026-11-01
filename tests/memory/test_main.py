@@ -1333,3 +1333,17 @@ class TestAsyncPartialInsertFailure:
             )
 
         mock_async_memory.db.save_messages.assert_called_once()
+
+
+
+
+@pytest.mark.asyncio
+async def test_async_update_reports_not_found_when_store_finds_nothing(mocker):
+    memory = _build_memory_instance(mocker, AsyncMemory)
+    memory.vector_store.get.return_value = SimpleNamespace(id="m1", payload={"data": "old", "user_id": "alice"})
+    memory.vector_store.update.return_value = False
+
+    with pytest.raises(ValueError, match="not found"):
+        await memory._update_memory("m1", "new", {"new": [0.1, 0.2, 0.3]})
+
+    memory.db.add_history.assert_not_called()

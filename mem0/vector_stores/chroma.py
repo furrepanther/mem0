@@ -176,7 +176,7 @@ class ChromaDB(VectorStoreBase):
         vector_id: str,
         vector: Optional[List[float]] = None,
         payload: Optional[Dict] = None,
-    ):
+    ) -> bool:
         """
         Update a vector and its payload.
 
@@ -184,12 +184,20 @@ class ChromaDB(VectorStoreBase):
             vector_id (str): ID of the vector to update.
             vector (Optional[List[float]], optional): Updated vector. Defaults to None.
             payload (Optional[Dict], optional): Updated payload. Defaults to None.
+
+        Returns:
+            bool: True if the record exists and was updated, False if no record has this ID.
+
+        A read-back error propagates: the write may have landed, so callers must
+        handle the outcome as uncertain instead of reporting success.
         """
         self.collection.update(
             ids=[vector_id],
             embeddings=[vector] if vector is not None else None,
             metadatas=[payload] if payload is not None else None,
         )
+        # Chroma ignores an update to a missing id and returns no count, so read the id back.
+        return bool(self.collection.get(ids=[vector_id])["ids"])
 
     def get(self, vector_id: str) -> Optional[OutputData]:
         """
