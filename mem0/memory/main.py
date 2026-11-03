@@ -90,6 +90,35 @@ def _vector_store_list_rows(listed):
     return []
 
 
+def _vector_store_supports_keyword_search(vector_store: VectorStoreBase) -> bool:
+    """Return whether a store supplies a real keyword/BM25 implementation.
+
+    ``VectorStoreBase.keyword_search`` is deliberately a no-op capability
+    marker.  Calling it (and loading spaCy merely to prepare its input) for a
+    store that inherits that marker is unnecessary work and produces a
+    misleading optional-dependency warning in semantic-only deployments.
+    """
+
+    keyword_search = getattr(vector_store, "keyword_search", None)
+    return callable(keyword_search) and (
+        getattr(type(vector_store), "keyword_search", None)
+        is not VectorStoreBase.keyword_search
+    )
+
+
+def _keyword_text_for_vector_store(vector_store: VectorStoreBase, text: str) -> str:
+    """Prepare BM25 text only when the selected store can consume it.
+
+    Semantic-only stores retain the raw text, matching the documented
+    ``lemmatize_for_bm25`` fallback when spaCy is unavailable while avoiding
+    the optional NLP import entirely.
+    """
+
+    if not _vector_store_supports_keyword_search(vector_store):
+        return text
+    return lemmatize_for_bm25(text)
+
+
 # Fields that hold runtime auth/connection objects and must be preserved.
 # These are non-serializable objects (e.g. AWSV4SignerAuth, RequestsHttpConnection)
 # needed by clients like OpenSearch — not sensitive strings to redact.
@@ -540,12 +569,10 @@ class Memory(MemoryBase):
             self._telemetry_vector_store = VectorStoreFactory.create(
                 self.config.vector_store.provider, telemetry_config
             )
-        if getattr(type(self.vector_store), "keyword_search", None) is VectorStoreBase.keyword_search:
-            logger.warning(
-                "The '%s' vector store does not support keyword search. "
-                "Hybrid (BM25) scoring will be disabled and search will use "
-                "semantic similarity only. To enable hybrid search, switch to a "
-                "store with keyword_search support (e.g. qdrant, elasticsearch, pgvector).",
+        if not _vector_store_supports_keyword_search(self.vector_store):
+            logger.info(
+                "The '%s' vector store has no keyword-search implementation; "
+                "running declared semantic-only retrieval with BM25 disabled.",
                 self.config.vector_store.provider,
             )
 
@@ -1025,7 +1052,7 @@ class Memory(MemoryBase):
                 continue
             seen_hashes.add(mem_hash)
 
-            text_lemmatized = lemmatize_for_bm25(text)
+            text_lemmatized = _keyword_text_for_vector_store(self.vector_store, text)
 
             memory_id = str(uuid.uuid4())
             mem_metadata = deepcopy(metadata)
@@ -1645,7 +1672,10 @@ class Memory(MemoryBase):
             threshold = 0.1
 
         # Step 1: Preprocess query
-        query_lemmatized = lemmatize_for_bm25(query)
+        keyword_search_supported = _vector_store_supports_keyword_search(self.vector_store)
+        query_lemmatized = (
+            lemmatize_for_bm25(query) if keyword_search_supported else query
+        )
         query_entities = extract_entities(query)
 
         # Step 2: Embed query
@@ -1658,8 +1688,12 @@ class Memory(MemoryBase):
         )
 
         # Step 4: Keyword search (if store supports it)
-        keyword_results = self.vector_store.keyword_search(
-            query=query_lemmatized, top_k=internal_limit, filters=filters
+        keyword_results = (
+            self.vector_store.keyword_search(
+                query=query_lemmatized, top_k=internal_limit, filters=filters
+            )
+            if keyword_search_supported
+            else None
         )
 
         # Step 5: Compute BM25 scores from keyword results
@@ -1985,7 +2019,9 @@ class Memory(MemoryBase):
         if "created_at" not in new_metadata:
             new_metadata["created_at"] = datetime.now(timezone.utc).isoformat()
         new_metadata["updated_at"] = new_metadata["created_at"]
-        new_metadata["text_lemmatized"] = lemmatize_for_bm25(data)
+        new_metadata["text_lemmatized"] = _keyword_text_for_vector_store(
+            self.vector_store, data
+        )
 
         self.vector_store.insert(
             vectors=[embeddings],
@@ -2075,7 +2111,9 @@ class Memory(MemoryBase):
 
         new_metadata["data"] = data
         new_metadata["hash"] = hashlib.md5(data.encode()).hexdigest()
-        new_metadata["text_lemmatized"] = lemmatize_for_bm25(data)
+        new_metadata["text_lemmatized"] = _keyword_text_for_vector_store(
+            self.vector_store, data
+        )
         new_metadata["created_at"] = existing_memory.payload.get("created_at")
         new_metadata["updated_at"] = datetime.now(timezone.utc).isoformat()
 
@@ -2228,12 +2266,10 @@ class AsyncMemory(MemoryBase):
                 os.makedirs(telemetry_config.path, exist_ok=True)
             self._telemetry_vector_store = VectorStoreFactory.create(self.config.vector_store.provider, telemetry_config)
 
-        if getattr(type(self.vector_store), "keyword_search", None) is VectorStoreBase.keyword_search:
-            logger.warning(
-                "The '%s' vector store does not support keyword search. "
-                "Hybrid (BM25) scoring will be disabled and search will use "
-                "semantic similarity only. To enable hybrid search, switch to a "
-                "store with keyword_search support (e.g. qdrant, elasticsearch, pgvector).",
+        if not _vector_store_supports_keyword_search(self.vector_store):
+            logger.info(
+                "The '%s' vector store has no keyword-search implementation; "
+                "running declared semantic-only retrieval with BM25 disabled.",
                 self.config.vector_store.provider,
             )
 
@@ -2706,7 +2742,7 @@ class AsyncMemory(MemoryBase):
                 continue
             seen_hashes.add(mem_hash)
 
-            text_lemmatized = lemmatize_for_bm25(text)
+            text_lemmatized = _keyword_text_for_vector_store(self.vector_store, text)
 
             memory_id = str(uuid.uuid4())
             mem_metadata = deepcopy(metadata)
@@ -3334,7 +3370,12 @@ class AsyncMemory(MemoryBase):
             threshold = 0.1
 
         # Step 1: Preprocess query (CPU-bound)
-        query_lemmatized = await asyncio.to_thread(lemmatize_for_bm25, query)
+        keyword_search_supported = _vector_store_supports_keyword_search(self.vector_store)
+        query_lemmatized = (
+            await asyncio.to_thread(lemmatize_for_bm25, query)
+            if keyword_search_supported
+            else query
+        )
         query_entities = await asyncio.to_thread(extract_entities, query)
 
         # Step 2: Embed query
@@ -3347,8 +3388,15 @@ class AsyncMemory(MemoryBase):
         )
 
         # Step 4: Keyword search (if store supports it)
-        keyword_results = await asyncio.to_thread(
-            self.vector_store.keyword_search, query=query_lemmatized, top_k=internal_limit, filters=filters
+        keyword_results = (
+            await asyncio.to_thread(
+                self.vector_store.keyword_search,
+                query=query_lemmatized,
+                top_k=internal_limit,
+                filters=filters,
+            )
+            if keyword_search_supported
+            else None
         )
 
         # Step 5: Compute BM25 scores
@@ -3684,7 +3732,9 @@ class AsyncMemory(MemoryBase):
         if "created_at" not in new_metadata:
             new_metadata["created_at"] = datetime.now(timezone.utc).isoformat()
         new_metadata["updated_at"] = new_metadata["created_at"]
-        new_metadata["text_lemmatized"] = lemmatize_for_bm25(data)
+        new_metadata["text_lemmatized"] = _keyword_text_for_vector_store(
+            self.vector_store, data
+        )
 
         await asyncio.to_thread(
             self.vector_store.insert,
@@ -3795,7 +3845,9 @@ class AsyncMemory(MemoryBase):
 
         new_metadata["data"] = data
         new_metadata["hash"] = hashlib.md5(data.encode()).hexdigest()
-        new_metadata["text_lemmatized"] = lemmatize_for_bm25(data)
+        new_metadata["text_lemmatized"] = _keyword_text_for_vector_store(
+            self.vector_store, data
+        )
         new_metadata["created_at"] = existing_memory.payload.get("created_at")
         new_metadata["updated_at"] = datetime.now(timezone.utc).isoformat()
 

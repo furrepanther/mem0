@@ -299,6 +299,11 @@ def test_notice_event_bypasses_sampling():
 def test_async_notice_wrapper_uses_shared_helper(monkeypatch):
     calls = []
 
+    # This wrapper test verifies dispatch mechanics, not the process-wide
+    # telemetry policy.  Make its required precondition explicit so the
+    # local-only test lane can run with telemetry disabled.
+    monkeypatch.setattr(notices.telemetry_module, "MEM0_TELEMETRY", True)
+
     def display(memory_instance, sync_type, trigger_function):
         calls.append((memory_instance, sync_type, trigger_function))
 

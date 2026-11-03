@@ -216,13 +216,28 @@ def test_search_explain_includes_score_details(
     mock_embedder.embed.return_value = [0.1, 0.2, 0.3]
     mock_embedder_factory.return_value = mock_embedder
 
-    mock_vector_store = MagicMock()
-    mock_vector_store.search.return_value = [
-        MockVectorMemory("mem_1", {"data": "content", "user_id": "test"}, score=0.8)
-    ]
-    mock_vector_store.keyword_search.return_value = [
-        MockVectorMemory("mem_1", {"data": "content", "user_id": "test"}, score=5.0)
-    ]
+    class StoreWithKeywordSearch:
+        def __init__(self):
+            self.search_calls = []
+            self.keyword_search_calls = []
+
+        def search(self, **kwargs):
+            self.search_calls.append(kwargs)
+            return [
+                MockVectorMemory(
+                    "mem_1", {"data": "content", "user_id": "test"}, score=0.8
+                )
+            ]
+
+        def keyword_search(self, **kwargs):
+            self.keyword_search_calls.append(kwargs)
+            return [
+                MockVectorMemory(
+                    "mem_1", {"data": "content", "user_id": "test"}, score=5.0
+                )
+            ]
+
+    mock_vector_store = StoreWithKeywordSearch()
     mock_vector_factory.return_value = mock_vector_store
     mock_llm_factory.return_value = MagicMock()
     mock_sqlite.return_value = MagicMock()
@@ -1224,15 +1239,15 @@ async def test_async_create_memory_stores_text_lemmatized(mock_sqlite, mock_llm_
     assert payload[0]["text_lemmatized"] != "", "text_lemmatized must not be empty"
 
 
-class TestHybridSearchWarning:
-    """Warn at init when vector store does not support keyword_search."""
+class TestSemanticOnlyStoreNotice:
+    """Declare semantic-only stores without treating their intended mode as a warning."""
 
     @patch("mem0.memory.telemetry.capture_event")
     @patch("mem0.memory.main.SQLiteManager")
     @patch("mem0.utils.factory.LlmFactory.create")
     @patch("mem0.utils.factory.EmbedderFactory.create")
     @patch("mem0.utils.factory.VectorStoreFactory.create")
-    def test_warning_for_store_without_keyword_search(
+    def test_info_for_store_without_keyword_search(
         self, mock_vs_factory, mock_emb, mock_llm, mock_sqlite, _cap, caplog
     ):
         import logging
@@ -1259,10 +1274,21 @@ class TestHybridSearchWarning:
         config = MemoryConfig()
         config.vector_store.provider = "chroma"
 
-        with caplog.at_level(logging.WARNING, logger="mem0.memory.main"):
+        with caplog.at_level(logging.INFO, logger="mem0.memory.main"):
             Memory(config)
 
-        assert any("does not support keyword search" in r.message for r in caplog.records)
+        notices = [
+            record
+            for record in caplog.records
+            if "semantic-only retrieval" in record.message
+        ]
+        assert len(notices) == 1
+        assert notices[0].levelno == logging.INFO
+        assert not any(
+            record.levelno >= logging.WARNING
+            and record.name == "mem0.memory.main"
+            for record in caplog.records
+        )
 
     @patch("mem0.memory.telemetry.capture_event")
     @patch("mem0.memory.main.SQLiteManager")
@@ -1301,6 +1327,152 @@ class TestHybridSearchWarning:
             Memory(config)
 
         assert not any("does not support keyword search" in r.message for r in caplog.records)
+
+
+def test_semantic_only_store_skips_bm25_preprocessing_for_sync_create():
+    from mem0.vector_stores.base import VectorStoreBase
+
+    class StoreWithoutKeywordSearch(VectorStoreBase):
+        def create_col(self, *a, **kw): pass
+        def insert(self, *a, **kw): self.payloads = kw["payloads"]
+        def search(self, *a, **kw): return []
+        def delete(self, *a, **kw): pass
+        def update(self, *a, **kw): pass
+        def get(self, *a, **kw): pass
+        def list_cols(self): return []
+        def delete_col(self): pass
+        def col_info(self): return {}
+        def list(self, *a, **kw): return []
+        def reset(self): pass
+
+    store = StoreWithoutKeywordSearch()
+    memory = Memory.__new__(Memory)
+    memory.vector_store = store
+    memory.embedding_model = MagicMock()
+    memory.db = MagicMock()
+    data = "The raw semantic-only payload stays unchanged."
+
+    with patch(
+        "mem0.memory.main.lemmatize_for_bm25",
+        side_effect=AssertionError("semantic-only store must not load BM25 preprocessing"),
+    ):
+        memory._create_memory(data, {data: [0.1, 0.2]}, metadata={})
+
+    assert store.payloads[0]["text_lemmatized"] == data
+
+
+@pytest.mark.asyncio
+async def test_semantic_only_store_skips_bm25_preprocessing_for_async_create():
+    from mem0.memory.main import AsyncMemory
+    from mem0.vector_stores.base import VectorStoreBase
+
+    class StoreWithoutKeywordSearch(VectorStoreBase):
+        def create_col(self, *a, **kw): pass
+        def insert(self, *a, **kw): self.payloads = kw["payloads"]
+        def search(self, *a, **kw): return []
+        def delete(self, *a, **kw): pass
+        def update(self, *a, **kw): pass
+        def get(self, *a, **kw): pass
+        def list_cols(self): return []
+        def delete_col(self): pass
+        def col_info(self): return {}
+        def list(self, *a, **kw): return []
+        def reset(self): pass
+
+    store = StoreWithoutKeywordSearch()
+    memory = AsyncMemory.__new__(AsyncMemory)
+    memory.vector_store = store
+    memory.embedding_model = MagicMock()
+    memory.db = MagicMock()
+    data = "The async semantic-only payload stays unchanged."
+
+    with patch(
+        "mem0.memory.main.lemmatize_for_bm25",
+        side_effect=AssertionError("semantic-only store must not load BM25 preprocessing"),
+    ):
+        await memory._create_memory(data, {data: [0.1, 0.2]}, metadata={})
+
+    assert store.payloads[0]["text_lemmatized"] == data
+
+
+def test_semantic_only_store_skips_bm25_during_sync_search():
+    from mem0.vector_stores.base import VectorStoreBase
+
+    class StoreWithoutKeywordSearch(VectorStoreBase):
+        def create_col(self, *a, **kw): pass
+        def insert(self, *a, **kw): pass
+        def search(self, *a, **kw):
+            return [MockVectorMemory("semantic-1", {"data": "semantic result"}, score=0.8)]
+        def delete(self, *a, **kw): pass
+        def update(self, *a, **kw): pass
+        def get(self, *a, **kw): pass
+        def list_cols(self): return []
+        def delete_col(self): pass
+        def col_info(self): return {}
+        def list(self, *a, **kw): return []
+        def reset(self): pass
+
+    store = StoreWithoutKeywordSearch()
+    store.keyword_search = MagicMock(
+        side_effect=AssertionError("semantic-only store must not perform keyword search")
+    )
+    memory = Memory.__new__(Memory)
+    memory.vector_store = store
+    memory.embedding_model = MagicMock()
+    memory.embedding_model.embed.return_value = [0.1, 0.2]
+
+    with (
+        patch(
+            "mem0.memory.main.lemmatize_for_bm25",
+            side_effect=AssertionError("semantic-only store must not load BM25 preprocessing"),
+        ),
+        patch("mem0.memory.main.extract_entities", return_value=[]),
+    ):
+        result = memory._search_vector_store("semantic query", {}, 1)
+
+    assert [item["id"] for item in result] == ["semantic-1"]
+    store.keyword_search.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_semantic_only_store_skips_bm25_during_async_search():
+    from mem0.memory.main import AsyncMemory
+    from mem0.vector_stores.base import VectorStoreBase
+
+    class StoreWithoutKeywordSearch(VectorStoreBase):
+        def create_col(self, *a, **kw): pass
+        def insert(self, *a, **kw): pass
+        def search(self, *a, **kw):
+            return [MockVectorMemory("semantic-async-1", {"data": "semantic result"}, score=0.8)]
+        def delete(self, *a, **kw): pass
+        def update(self, *a, **kw): pass
+        def get(self, *a, **kw): pass
+        def list_cols(self): return []
+        def delete_col(self): pass
+        def col_info(self): return {}
+        def list(self, *a, **kw): return []
+        def reset(self): pass
+
+    store = StoreWithoutKeywordSearch()
+    store.keyword_search = MagicMock(
+        side_effect=AssertionError("semantic-only store must not perform keyword search")
+    )
+    memory = AsyncMemory.__new__(AsyncMemory)
+    memory.vector_store = store
+    memory.embedding_model = MagicMock()
+    memory.embedding_model.embed.return_value = [0.1, 0.2]
+
+    with (
+        patch(
+            "mem0.memory.main.lemmatize_for_bm25",
+            side_effect=AssertionError("semantic-only store must not load BM25 preprocessing"),
+        ),
+        patch("mem0.memory.main.extract_entities", return_value=[]),
+    ):
+        result = await memory._search_vector_store("semantic query", {}, 1)
+
+    assert [item["id"] for item in result] == ["semantic-async-1"]
+    store.keyword_search.assert_not_called()
 
 
 class TestPreserveCustomMetadata:

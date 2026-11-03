@@ -1,5 +1,4 @@
 """Real Chroma controls for update/delete races and ambiguous read-back."""
-import asyncio
 
 import pytest
 
@@ -37,8 +36,9 @@ def _memory(memory_class, store, history):
     return memory
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize("memory_class", [Memory, AsyncMemory])
-def test_actual_chroma_delete_between_read_and_update_fails_without_history(actual_chroma_memory, memory_class):
+async def test_actual_chroma_delete_between_read_and_update_fails_without_history(actual_chroma_memory, memory_class):
     store, history = actual_chroma_memory
     memory = _memory(memory_class, store, history)
     original = store.update
@@ -47,9 +47,14 @@ def test_actual_chroma_delete_between_read_and_update_fails_without_history(actu
         return original(**kwargs)
     store.update = delete_then_update
     with pytest.raises(ValueError, match="not found"):
-        result = memory._update_memory("fixture-id", "new fixture", {"new fixture": [0.4, 0.3, 0.2, 0.1]})
         if memory_class is AsyncMemory:
-            asyncio.run(result)
+            await memory._update_memory(
+                "fixture-id", "new fixture", {"new fixture": [0.4, 0.3, 0.2, 0.1]}
+            )
+        else:
+            memory._update_memory(
+                "fixture-id", "new fixture", {"new fixture": [0.4, 0.3, 0.2, 0.1]}
+            )
     assert store.get("fixture-id") is None
     assert not any(row["event"] == "UPDATE" for row in history.get_history("fixture-id"))
 
