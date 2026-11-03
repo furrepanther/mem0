@@ -1426,12 +1426,16 @@ def test_semantic_only_store_skips_bm25_during_sync_search():
             "mem0.memory.main.lemmatize_for_bm25",
             side_effect=AssertionError("semantic-only store must not load BM25 preprocessing"),
         ),
-        patch("mem0.memory.main.extract_entities", return_value=[]),
+        patch(
+            "mem0.memory.main.extract_entities",
+            side_effect=AssertionError("semantic-only store must not attempt entity extraction"),
+        ) as entity_extract,
     ):
         result = memory._search_vector_store("semantic query", {}, 1)
 
     assert [item["id"] for item in result] == ["semantic-1"]
     store.keyword_search.assert_not_called()
+    entity_extract.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1467,12 +1471,117 @@ async def test_semantic_only_store_skips_bm25_during_async_search():
             "mem0.memory.main.lemmatize_for_bm25",
             side_effect=AssertionError("semantic-only store must not load BM25 preprocessing"),
         ),
-        patch("mem0.memory.main.extract_entities", return_value=[]),
+        patch(
+            "mem0.memory.main.extract_entities",
+            side_effect=AssertionError("semantic-only store must not attempt entity extraction"),
+        ) as entity_extract,
     ):
         result = await memory._search_vector_store("semantic query", {}, 1)
 
     assert [item["id"] for item in result] == ["semantic-async-1"]
     store.keyword_search.assert_not_called()
+    entity_extract.assert_not_called()
+
+
+def test_semantic_only_store_skips_sync_entity_linking():
+    from mem0.memory.main import Memory
+
+    memory = Memory.__new__(Memory)
+    memory.vector_store = object()
+
+    with patch(
+        "mem0.memory.main.extract_entities",
+        side_effect=AssertionError("semantic-only store must not link extracted entities"),
+    ) as entity_extract:
+        memory._link_entities_for_memory("memory-id", "Ada met Grace", {})
+
+    entity_extract.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_semantic_only_store_skips_async_entity_linking():
+    from mem0.memory.main import AsyncMemory
+
+    memory = AsyncMemory.__new__(AsyncMemory)
+    memory.vector_store = object()
+
+    with patch(
+        "mem0.memory.main.extract_entities",
+        side_effect=AssertionError("semantic-only store must not link extracted entities"),
+    ) as entity_extract:
+        await memory._link_entities_for_memory("memory-id", "Ada met Grace", {})
+
+    entity_extract.assert_not_called()
+
+
+def test_semantic_only_store_skips_entity_batch_extraction():
+    from mem0.memory.main import _extract_entities_batch_for_vector_store
+    from mem0.vector_stores.base import VectorStoreBase
+
+    class StoreWithoutKeywordSearch(VectorStoreBase):
+        def create_col(self, *a, **kw): pass
+        def insert(self, *a, **kw): pass
+        def search(self, *a, **kw): return []
+        def delete(self, *a, **kw): pass
+        def update(self, *a, **kw): pass
+        def get(self, *a, **kw): pass
+        def list_cols(self): return []
+        def delete_col(self): pass
+        def col_info(self): return {}
+        def list(self, *a, **kw): return []
+        def reset(self): pass
+
+    with patch(
+        "mem0.memory.main.extract_entities_batch",
+        side_effect=AssertionError("semantic-only store must not attempt batch entity extraction"),
+    ) as entity_extract:
+        result = _extract_entities_batch_for_vector_store(
+            StoreWithoutKeywordSearch(), ["first", "second"]
+        )
+
+    assert result == [[], []]
+    entity_extract.assert_not_called()
+
+
+def test_keyword_store_retains_entity_extraction():
+    from mem0.memory.main import _extract_entities_for_vector_store
+    from mem0.vector_stores.base import VectorStoreBase
+
+    class StoreWithKeywordSearch(VectorStoreBase):
+        def keyword_search(self, query, top_k=5, filters=None): return []
+        def create_col(self, *a, **kw): pass
+        def insert(self, *a, **kw): pass
+        def search(self, *a, **kw): return []
+        def delete(self, *a, **kw): pass
+        def update(self, *a, **kw): pass
+        def get(self, *a, **kw): pass
+        def list_cols(self): return []
+        def delete_col(self): pass
+        def col_info(self): return {}
+        def list(self, *a, **kw): return []
+        def reset(self): pass
+
+    expected = [("PERSON", "Ada")]
+    with patch("mem0.memory.main.extract_entities", return_value=expected) as entity_extract:
+        result = _extract_entities_for_vector_store(StoreWithKeywordSearch(), "Ada")
+
+    assert result == expected
+    entity_extract.assert_called_once_with("Ada")
+
+
+def test_spacy_model_loader_fails_closed_without_auto_download(monkeypatch):
+    from types import SimpleNamespace
+
+    from mem0.utils import spacy_models
+
+    fake_spacy = SimpleNamespace(
+        util=SimpleNamespace(is_package=lambda model_name: False)
+    )
+    monkeypatch.setitem(sys.modules, "spacy", fake_spacy)
+    monkeypatch.delitem(sys.modules, "spacy.cli", raising=False)
+
+    with pytest.raises(RuntimeError, match="automatic model download is disabled"):
+        spacy_models._ensure_model_available()
 
 
 class TestPreserveCustomMetadata:

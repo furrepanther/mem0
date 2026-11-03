@@ -119,6 +119,34 @@ def _keyword_text_for_vector_store(vector_store: VectorStoreBase, text: str) -> 
     return lemmatize_for_bm25(text)
 
 
+def _vector_store_supports_entity_features(vector_store: VectorStoreBase) -> bool:
+    """Return whether optional entity enrichment is allowed for this store.
+
+    Entity extraction has the same optional NLP dependency boundary as BM25.
+    A store that only inherits the base keyword-search marker is explicitly a
+    semantic-only deployment, so it must not initialize spaCy, create an
+    entity sidecar, or apply entity boosts on an add or search path.
+    """
+
+    return _vector_store_supports_keyword_search(vector_store)
+
+
+def _extract_entities_for_vector_store(vector_store: VectorStoreBase, text: str):
+    """Extract entities only for stores that opted into entity features."""
+
+    if not _vector_store_supports_entity_features(vector_store):
+        return []
+    return extract_entities(text)
+
+
+def _extract_entities_batch_for_vector_store(vector_store: VectorStoreBase, texts):
+    """Batch-extract entities only for stores that opted into entity features."""
+
+    if not _vector_store_supports_entity_features(vector_store):
+        return [[] for _ in texts]
+    return extract_entities_batch(texts)
+
+
 # Fields that hold runtime auth/connection objects and must be preserved.
 # These are non-serializable objects (e.g. AWSV4SignerAuth, RequestsHttpConnection)
 # needed by clients like OpenSearch — not sensitive strings to redact.
@@ -737,8 +765,10 @@ class Memory(MemoryBase):
         Phase 7 in add(): per-entity search-then-update-or-insert via the
         existing `_upsert_entity` helper. Non-fatal on any failure.
         """
+        if not _vector_store_supports_entity_features(self.vector_store):
+            return
         try:
-            entities = extract_entities(text)
+            entities = _extract_entities_for_vector_store(self.vector_store, text)
             if not entities:
                 return
             seen = set()
@@ -1127,7 +1157,9 @@ class Memory(MemoryBase):
         # Phase 7: Batch entity linking
         try:
             all_texts = [r[1] for r in persisted_records]
-            all_entities = extract_entities_batch(all_texts)
+            all_entities = _extract_entities_batch_for_vector_store(
+                self.vector_store, all_texts
+            )
 
             # 7a: Global dedup — collect unique entities across all memories
             global_entities = {}  # normalized_key -> (entity_type, entity_text, set of memory_ids)
@@ -1676,7 +1708,7 @@ class Memory(MemoryBase):
         query_lemmatized = (
             lemmatize_for_bm25(query) if keyword_search_supported else query
         )
-        query_entities = extract_entities(query)
+        query_entities = _extract_entities_for_vector_store(self.vector_store, query)
 
         # Step 2: Embed query
         embeddings = self.embedding_model.embed(query, "search")
@@ -2443,8 +2475,12 @@ class AsyncMemory(MemoryBase):
 
     async def _link_entities_for_memory(self, memory_id, text, filters):
         """Async variant of `Memory._link_entities_for_memory`."""
+        if not _vector_store_supports_entity_features(self.vector_store):
+            return
         try:
-            entities = await asyncio.to_thread(extract_entities, text)
+            entities = await asyncio.to_thread(
+                _extract_entities_for_vector_store, self.vector_store, text
+            )
             if not entities:
                 return
             seen = set()
@@ -2821,7 +2857,9 @@ class AsyncMemory(MemoryBase):
         # Phase 7: Batch entity linking
         try:
             all_texts = [r[1] for r in persisted_records]
-            all_entities = await asyncio.to_thread(extract_entities_batch, all_texts)
+            all_entities = await asyncio.to_thread(
+                _extract_entities_batch_for_vector_store, self.vector_store, all_texts
+            )
 
             # 7a: Global dedup
             global_entities = {}
@@ -3376,7 +3414,9 @@ class AsyncMemory(MemoryBase):
             if keyword_search_supported
             else query
         )
-        query_entities = await asyncio.to_thread(extract_entities, query)
+        query_entities = await asyncio.to_thread(
+            _extract_entities_for_vector_store, self.vector_store, query
+        )
 
         # Step 2: Embed query
         embeddings = await asyncio.to_thread(self.embedding_model.embed, query, "search")

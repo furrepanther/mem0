@@ -19,7 +19,12 @@ _lock = threading.Lock()
 
 
 def _ensure_model_available():
-    """Download en_core_web_sm if spaCy is installed but model is missing."""
+    """Verify the optional spaCy model without performing a network download.
+
+    Model installation is an operator-managed deployment step.  A retrieval
+    or indexing call must never turn a missing optional model into an
+    unsolicited network request.
+    """
     try:
         import spacy
     except ImportError:
@@ -28,17 +33,10 @@ def _ensure_model_available():
         )
 
     if not spacy.util.is_package("en_core_web_sm"):
-        logger.info("Downloading spaCy model en_core_web_sm...")
-        try:
-            from spacy.cli import download
-
-            download("en_core_web_sm")
-            logger.info("spaCy model en_core_web_sm downloaded successfully")
-        except Exception as e:
-            raise RuntimeError(
-                f"Failed to download spaCy model en_core_web_sm: {e}. "
-                "Please install manually: python -m spacy download en_core_web_sm"
-            ) from e
+        raise RuntimeError(
+            "spaCy model en_core_web_sm is unavailable; automatic model download "
+            "is disabled. Install the approved model before enabling NLP features."
+        )
 
 
 def get_nlp_full():
