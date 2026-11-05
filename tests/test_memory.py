@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import sys
 from datetime import datetime
@@ -9,6 +10,16 @@ from mem0 import Memory
 from mem0.configs.base import MemoryConfig
 from mem0.memory.main import _entity_collection_name
 from mem0.memory.utils import normalize_facts
+
+
+try:
+    HAS_LANGCHAIN_CORE = importlib.util.find_spec("langchain_core.messages.utils") is not None
+except ModuleNotFoundError:
+    HAS_LANGCHAIN_CORE = False
+REQUIRES_LANGCHAIN_CORE = pytest.mark.skipif(
+    not HAS_LANGCHAIN_CORE,
+    reason="optional langchain-core adapter is intentionally not installed in the local-only runtime",
+)
 
 
 class MockVectorMemory:
@@ -1787,6 +1798,7 @@ class TestAsyncDeleteAllEntityRace:
 
 
 @pytest.mark.asyncio
+@REQUIRES_LANGCHAIN_CORE
 @patch("mem0.memory.main.VectorStoreFactory")
 @patch("mem0.memory.main.EmbedderFactory")
 @patch("mem0.memory.main.LlmFactory")
@@ -1860,6 +1872,7 @@ async def test_async_procedural_memory_default_path_without_langchain(mock_llm_f
 
 
 @pytest.mark.asyncio
+@REQUIRES_LANGCHAIN_CORE
 @patch("mem0.memory.main.VectorStoreFactory")
 @patch("mem0.memory.main.EmbedderFactory")
 @patch("mem0.memory.main.LlmFactory")
@@ -1892,6 +1905,7 @@ async def test_async_procedural_memory_langchain_list_content(mock_llm_factory, 
 
 
 @pytest.mark.asyncio
+@REQUIRES_LANGCHAIN_CORE
 @patch("mem0.memory.main.VectorStoreFactory")
 @patch("mem0.memory.main.EmbedderFactory")
 @patch("mem0.memory.main.LlmFactory")
